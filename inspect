@@ -1,0 +1,3 @@
+#!/bin/bash
+
+CONF=${1:-/etc/cassandra-a}
