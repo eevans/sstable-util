@@ -15,4 +15,4 @@ done
 java \
     -Dlogback.configurationFile=logback-tools.xml \
     -cp $CLASSPATH \
-    org.wikimedia.cassandra.Inspector "$@"
+    org.wikimedia.cassandra.TwcsInspector "$@"
