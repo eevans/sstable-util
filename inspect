@@ -1,3 +1,18 @@
 #!/bin/bash
 
-CONF=${1:-/etc/cassandra-a}
+CLASSPATH=/etc/cassandra-a
+CLASSPATH=$CLASSPATH:/srv/deployment/cassandra/twcs/lib/cassandra-v2.2/TimeWindowCompactionStrategy-2.2.5.jar
+CLASSPATH=$CLASSPATH:target/twcs-inspect-1.0.0-SNAPSHOT.jar
+
+for j in /usr/share/cassandra/*.jar; do
+    CLASSPATH=$CLASSPATH:$j
+done
+
+for j in /usr/share/cassandra/lib/*.jar; do
+    CLASSPATH=$CLASSPATH:$j
+done
+
+java \
+    -Dlogback.configurationFile=logback-tools.xml \
+    -cp $CLASSPATH \
+    org.wikimedia.cassandra.Inspector "$@"
