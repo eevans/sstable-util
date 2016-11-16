@@ -7,31 +7,28 @@ import java.io.PrintStream;
 import java.text.DateFormat;
 import java.text.DecimalFormat;
 import java.text.SimpleDateFormat;
+import java.util.Collection;
 import java.util.Date;
-import java.util.EnumSet;
 import java.util.Map;
 import java.util.TimeZone;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.cassandra.io.sstable.Descriptor;
-import org.apache.cassandra.io.sstable.metadata.MetadataComponent;
-import org.apache.cassandra.io.sstable.metadata.MetadataType;
-import org.apache.cassandra.io.sstable.metadata.StatsMetadata;
-import org.apache.cassandra.tools.Util;
-import org.apache.cassandra.utils.Pair;
+import org.apache.cassandra.config.Config;
 
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Maps;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
 import com.google.common.collect.Sets;
-import com.jeffjirsa.cassandra.db.compaction.TimeWindowCompactionStrategy;
 
 public class TwcsInspector {
 
     private static final DateFormat dataFormatter;
+    private static final ObjectMapper mapper = new ObjectMapper();
 
     static {
         dataFormatter = new SimpleDateFormat("yyyy-MM-dd");
         dataFormatter.setTimeZone(TimeZone.getTimeZone("UTC"));
+
+        mapper.enable(SerializationFeature.INDENT_OUTPUT);
     }
 
     /* Copy-pasta from: http://stackoverflow.com/questions/3263892/format-file-size-as-mb-gb-etc */
@@ -89,51 +86,38 @@ public class TwcsInspector {
             System.exit(1);
         }
 
-        Util.initDatabaseDescriptor();
+        Config.setClientMode(true);
 
-        HashMultimap<Long, File> buckets = HashMultimap.<Long, File>create();
-        Map<File, StatsMetadata> statsMap = Maps.newHashMap();
+        TimeWindowedTables tables = TimeWindowedTables.fromSSTables(TimeUnit.DAYS, 14, getDataFiles(root));
 
-        for (File f : getDataFiles(root)) {
-            Descriptor descriptor = Descriptor.fromFilename(f.getAbsolutePath());
-            Map<MetadataType, MetadataComponent> metadata = descriptor.getMetadataSerializer().deserialize(descriptor, EnumSet.allOf(MetadataType.class));
-            StatsMetadata stats = (StatsMetadata) metadata.get(MetadataType.STATS);
-            if (stats == null) {
-                System.err.printf("Warning: Skipping %s; No StatsMetadata object!");
-                continue;
+        // Output results as JSON.
+        if ("JSON".equals(System.getenv().getOrDefault("FORMAT", "").toUpperCase())) {
+            outln(mapper.writeValueAsString(tables.get()));
+        }
+        // Output results human readable.
+        else {
+            outf("  %-32s %8s %16s %15s%n", "File", "Size", "Tombstones", "Repaired at");
+
+            Map<Long, Collection<SSTableMetadata>> tablesMap = tables.get();
+            long totalSize = 0;
+
+            for (Long bucket : Sets.newTreeSet(tablesMap.keySet())) {
+                outln(dataFormatter.format(new Date(bucket)));
+                for (SSTableMetadata meta : tablesMap.get(bucket)) {
+                    totalSize += meta.getDataFileSize();
+                    outf(
+                            "  %-32s %8s %15.2f%% %15d%n",
+                            meta.getDataFileName(),
+                            readableFileSize(meta.getDataFileSize()),
+                            meta.getEstimatedDroppableTombstones() * 100,
+                            meta.getRepairedAt());
+                }
+                outln();
             }
-            statsMap.put(f, stats);
-            // FIXME: This scaling to milliseconds hard-codes an assumption on microseconds.
-            long maxTimestamp = stats.maxTimestamp / 1000L;
-            // FIXME: This hard-codes time-window size and units
-            Pair<Long, Long> bounds = TimeWindowCompactionStrategy.getWindowBoundsInMillis(TimeUnit.DAYS, 14, maxTimestamp);
 
-            buckets.put(bounds.left, f);
+            outf("%nTotal size: %s (data files only)%n", readableFileSize(totalSize));
         }
 
-        outf("  %-32s %8s %16s %15s%n", "File", "Size", "Tombstones", "Repaired at");
-
-        long totalSize = 0;
-
-        for (Long lower : Sets.newTreeSet(buckets.keySet())) {
-            outln(dataFormatter.format(new Date(lower)));
-            for (File f : buckets.get(lower)) {
-                long size = f.length();
-                totalSize += size;
-                StatsMetadata stats = statsMap.get(f);
-                double tombstoneRatio = stats.getEstimatedDroppableTombstoneRatio((int) (System.currentTimeMillis() / 1000));
-                outf(
-                        "  %-32s %8s %15.2f%% %15d%n",
-                        f.getName(),
-                        readableFileSize(size),
-                        tombstoneRatio * 100,
-                        stats.repairedAt);
-            }
-            outln();
-        }
-
-        outf("%nTotal size: %s (data files only)%n", readableFileSize(totalSize));
-
+        System.exit(0);
     }
-
 }
